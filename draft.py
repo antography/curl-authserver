@@ -1,11 +1,11 @@
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, make_response, redirect, send_file, send_from_directory
 from flask_socketio import SocketIO, join_room, leave_room
 from flask_cors import CORS, cross_origin
 from flask import jsonify
 from random import randint
 import time
 import os, sys
-import bcrypt, html
+import bcrypt, html, hashlib
 import mariadb
 import configparser
 import hmac
@@ -54,6 +54,7 @@ def handle_message(data):
 
 @socketio.on('connect')
 def handle_message():
+  # Tell the connecting client what the authentication provider can do
   data = {
     'anon': bool(config['general']['anonymous']),
     'registration': bool(config['general']['registration'])
@@ -61,38 +62,91 @@ def handle_message():
   socketio.emit('authProvInfo', data, room=request.sid)
 
 
-@socketio.on('register')
-def socket_register(json):
-  res = 1
+@app.route('/register', methods=['POST'])
+def post_register():
+  json = request.form
+  ref = json['ref']
 
-  if ((json['password'] or json['username']) == ""):
-    res = -1
+  # Make sure nothing is null
+  if (json['password']  == '' or json['username']  == '' or json['authprovider'] == ''):
+    return redirect(ref)
 
-  hashed = bcrypt.hashpw(json['password'].encode('utf8'), bcrypt.gensalt())
-  userId = genKey()
+  # lightly sanatize the username
   username = html.escape(json['username'])
 
-  data = {
-    'username': username,
-    'hashed': hashed.decode("utf-8"),
-    'ID': userId
-  }
+  # Make sure the user doesnt exist already
+  try:
+    cursor.execute("SELECT username FROM users WHERE username=?", (username,))
+
+  except mariadb.Error as e:
+    print (e)
+    return redirect(ref)
+
+  # If the user exists, then nope out
+  if (cursor.fetchone() != None):
+    return redirect(ref)   
+  
+  hashed = bcrypt.hashpw(json['password'].encode('utf8'), bcrypt.gensalt())
+  userId = genKey()
+  sessionId = hashlib.md5(str(genKey()).encode('utf8')).hexdigest()
 
   try:
     cursor.execute( "INSERT INTO users (id, username, password) VALUES (?, ?, ?)", (userId, username, hashed))
     conn.commit()
-
   except mariadb.Error:
-    res = -2
+   return "Database died"
 
-  if res == -1:
-    socketio.emit("message", "Username or Password is empty", room=request.sid)
-  if res == -2:
-    socketio.emit("message", "Database did a doozy", room=request.sid)
+  try:
+    cursor.execute( "INSERT INTO sessions (uid, sid) VALUES (?, ?)", (userId, sessionId))
+    conn.commit()
+  except mariadb.Error:
+    return "Database did a doozy"
 
-  if res > 0:
-    socketio.emit ("message", data, room=request.sid)
 
+  # Success redirect with cookies
+  response = make_response(redirect('http://127.0.0.1:5500/app/index.html'))
+  response.set_cookie('session_id', sessionId)
+  response.set_cookie('auth_provider', json['authprovider'])
+  return response
+
+@app.route('/login', methods=['POST'])
+def post_login():
+  json = request.form
+  ref = json['ref']
+
+  username = html.escape(json['username'])
+  # Make sure the user is real on this authprov
+  try:
+    cursor.execute("SELECT username,password, id FROM users WHERE username=?", (username,))
+
+  except mariadb.Error as e:
+    print (e)
+    return redirect(ref)
+  # If the user doesnt exist then nope out
+  row = cursor.fetchone()
+  if (row == None):
+    return redirect(ref)   
+
+  if not (bcrypt.checkpw(json['password'].encode('utf8'), row[1].encode('utf8'))):
+    return redirect(ref)
+
+  sessionId = hashlib.md5(str(genKey()).encode('utf8')).hexdigest()
+
+  try:
+    cursor.execute( "INSERT INTO sessions (uid, sid) VALUES (?, ?)", (row[2], sessionId))
+    conn.commit()
+  except mariadb.Error:
+    return "Database did a doozy"
+
+  response = make_response(redirect('http://127.0.0.1:5500/app/index.html'))
+  response.set_cookie('session_id', sessionId)
+  response.set_cookie('auth_provider', json['authprovider'])
+  return response
+
+
+@app.route('/pfp/<uid>')
+def send_js(uid):
+    return send_from_directory("./pfp/", f'{uid}.jpg')
 
 if __name__ == '__main__':
-    socketio.run(app)
+    socketio.run(app, debug= True)
