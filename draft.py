@@ -148,5 +148,45 @@ def post_login():
 def send_js(uid):
     return send_from_directory("./pfp/", f'{uid}.jpg')
 
+
+@socketio.on('connect', namespace = "/user")
+def handle_message():
+  # Tell the connecting client what the authentication provider can do
+  data = {
+    'anon': bool(config['general']['anonymous']),
+    'registration': bool(config['general']['registration'])
+  }
+  socketio.emit('authProvInfo', data,  room=request.sid, namespace = "/user")
+
+@socketio.on('getUserInfo', namespace = "/user")
+def userInfo(sessionID = ""):
+  if sessionID == "":
+    return
+
+  try:
+    cursor.execute("SELECT * FROM users WHERE id=(SELECT uid FROM sessions WHERE sid=?)", (sessionID,))
+
+  except mariadb.Error as e:
+    print (e)
+
+  row = cursor.fetchone()
+  if (row == None):
+    return
+
+  try:
+    cursor.execute("SELECT * FROM buildings WHERE uid=?", (row[0],))
+
+  except mariadb.Error as e:
+    print (e)
+  
+  res = {
+    'userId': row[0],
+    'username': row[1],
+    'pfp': bool(row[3]),
+    'subtitle': row[6],
+    'guest': row[8]
+  }
+  socketio.emit('userInfo', res,  room=request.sid, namespace = "/user")
+
 if __name__ == '__main__':
     socketio.run(app, debug= True)
