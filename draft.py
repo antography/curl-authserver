@@ -158,14 +158,15 @@ def handle_message():
   }
   socketio.emit('authProvInfo', data,  room=request.sid, namespace = "/user")
 
+
 @socketio.on('getUserInfo', namespace = "/user")
 def userInfo(sessionID = ""):
   if sessionID == "":
     return
 
+ # Get the user profile data
   try:
     cursor.execute("SELECT * FROM users WHERE id=(SELECT uid FROM sessions WHERE sid=?)", (sessionID,))
-
   except mariadb.Error as e:
     print (e)
 
@@ -173,19 +174,33 @@ def userInfo(sessionID = ""):
   if (row == None):
     return
 
+  # Get the buildings that the user is apart of
   try:
     cursor.execute("SELECT * FROM buildings WHERE uid=?", (row[0],))
-
   except mariadb.Error as e:
     print (e)
   
+  buildings = []
+  for building in cursor:
+    buildings.append(
+      {
+        'bid': building[0],
+        'location': building[2],
+        'position': building[3],
+        'name': building[4]
+      }
+    )
+  
+
   res = {
     'userId': row[0],
     'username': row[1],
     'pfp': bool(row[3]),
     'subtitle': row[6],
-    'guest': row[8]
+    'guest': row[8],
+    'buildings': buildings
   }
+  print (res)
   socketio.emit('userInfo', res,  room=request.sid, namespace = "/user")
 
 if __name__ == '__main__':
